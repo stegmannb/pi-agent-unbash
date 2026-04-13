@@ -1,4 +1,4 @@
-import type { CommandRef } from "./types.ts";
+import type { CommandRef, RuleAction } from "./types.ts";
 
 export function getCommandName(cmd: CommandRef): string {
   return cmd.node.name?.value ?? cmd.node.name?.text ?? "";
@@ -11,7 +11,7 @@ export function getCommandArgs(cmd: CommandRef): string[] {
 /**
  * Resolve the action for a command against a rules map.
  *
- * Rules are evaluated in insertion order; last match wins.
+ * Rules are evaluated in insertion order; last match wins for "allow"/"ask".
  * The special pattern "*" matches any command.
  *
  * Matching uses subsequence logic:
@@ -25,18 +25,24 @@ export function getCommandArgs(cmd: CommandRef): string[] {
  * but extra flags or positional args anywhere in the sequence are permitted.
  *
  * Returns "ask" if no rule matches.
+ *
+ * "deny" is an unconditional veto: the moment any matching rule resolves to
+ * "deny", the function returns immediately regardless of other rules or their
+ * specificity. This prevents project-level or session rules from overriding a
+ * user-defined hard block.
  */
 export function resolveCommandAction(
   cmd: CommandRef,
-  rules: Record<string, "allow" | "ask">,
-): "allow" | "ask" {
+  rules: Record<string, RuleAction>,
+): RuleAction {
   const name = getCommandName(cmd);
   const args = getCommandArgs(cmd);
 
-  let result: "allow" | "ask" = "ask";
+  let result: RuleAction = "ask";
 
   for (const [pattern, action] of Object.entries(rules)) {
     if (pattern === "*") {
+      if (action === "deny") return "deny";
       result = action;
       continue;
     }
@@ -48,6 +54,7 @@ export function resolveCommandAction(
     if (patternName !== name) continue;
 
     if (patternArgs.length === 0 || isSubsequence(patternArgs, args)) {
+      if (action === "deny") return "deny";
       result = action;
     }
   }

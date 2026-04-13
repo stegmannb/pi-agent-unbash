@@ -96,4 +96,37 @@ test("resolveCommandAction", async (t) => {
     assert.equal(resolveCommandAction(cmd("terraform", ["apply"]), rules), "ask");
     assert.equal(resolveCommandAction(cmd("terraform", ["apply", "--force"]), rules), "ask");
   });
+
+  await t.test("deny blocks a command unconditionally", () => {
+    const rules = { "terraform destroy": "deny" as const };
+    assert.equal(resolveCommandAction(cmd("terraform", ["destroy"]), rules), "deny");
+    assert.equal(resolveCommandAction(cmd("terraform", ["destroy", "-auto-approve"]), rules), "deny");
+  });
+
+  await t.test("deny on base command blocks all subcommands", () => {
+    const rules = { "rm": "deny" as const };
+    assert.equal(resolveCommandAction(cmd("rm", ["-rf", "/"]), rules), "deny");
+    assert.equal(resolveCommandAction(cmd("rm", ["file.txt"]), rules), "deny");
+  });
+
+  await t.test("specific deny overrides broader allow (last-match-wins)", () => {
+    const rules = { "kubectl": "allow" as const, "kubectl delete namespace": "deny" as const };
+    assert.equal(resolveCommandAction(cmd("kubectl", ["get", "pods"]), rules), "allow");
+    assert.equal(resolveCommandAction(cmd("kubectl", ["delete", "namespace", "production"]), rules), "deny");
+    assert.equal(resolveCommandAction(cmd("kubectl", ["delete", "pod", "foo"]), rules), "allow");
+  });
+
+  await t.test("deny is a veto even when a broader ask rule comes after", () => {
+    const rules = { "kubectl delete namespace": "deny" as const, "kubectl delete": "ask" as const };
+    // "kubectl delete namespace" matches deny → veto, returned immediately regardless of later rules
+    assert.equal(resolveCommandAction(cmd("kubectl", ["delete", "namespace", "production"]), rules), "deny");
+    // "kubectl delete namespace" does NOT match "kubectl delete pod", so "kubectl delete" (ask) wins
+    assert.equal(resolveCommandAction(cmd("kubectl", ["delete", "pod", "foo"]), rules), "ask");
+  });
+
+  await t.test("deny with * wildcard blocks everything", () => {
+    const rules = { "*": "deny" as const };
+    assert.equal(resolveCommandAction(cmd("ls", []), rules), "deny");
+    assert.equal(resolveCommandAction(cmd("rm", ["-rf", "/"]), rules), "deny");
+  });
 });
