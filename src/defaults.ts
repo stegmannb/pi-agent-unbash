@@ -1,4 +1,6 @@
-export const DEFAULT_RULES: Record<string, "allow" | "ask"> = {
+import type { RuleAction } from "./types.ts";
+
+export const DEFAULT_RULES: Record<string, RuleAction> = {
   // Basic read-only utilities
   "cat": "allow",
   "cd": "allow",

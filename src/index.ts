@@ -9,13 +9,14 @@ import { getCommandName, resolveCommandAction } from "./resolve.ts";
 import { formatCommand, FORMAT_COMMAND_DEFAULT_MAX_LENGTH, FORMAT_COMMAND_DEFAULT_ARG_MAX_LENGTH } from "./format.ts";
 import { buildApprovalPrompt } from "./prompt.ts";
 import { DEFAULT_RULES } from "./defaults.ts";
+import type { RuleAction } from "./types.ts";
 
 const AGENT_DIR = path.join(os.homedir(), ".pi", "agent");
 const SETTINGS_PATH = path.join(AGENT_DIR, "settings.json");
 
 interface UnbashConfig {
   enabled: boolean;
-  rules: Record<string, "allow" | "ask">;
+  rules: Record<string, RuleAction>;
   commandDisplayMaxLength: number;
   commandDisplayArgMaxLength: number;
 }
@@ -39,13 +40,26 @@ const SAFE_FALLBACK_CONFIG: UnbashConfig = {
   commandDisplayArgMaxLength: FORMAT_COMMAND_DEFAULT_ARG_MAX_LENGTH,
 };
 
-/** Merge default, user, project, and session rules. Later layers win. */
+/**
+ * Merge default, user, project, and session rules. Later layers win for
+ * "allow" and "ask". "deny" is a veto: any layer that sets a key to "deny"
+ * wins unconditionally, regardless of what other layers say for that key.
+ */
 export function buildEffectiveRules(
-  userRules: Record<string, "allow" | "ask">,
-  projectRules: Record<string, "allow" | "ask">,
-  sessionRules: Record<string, "allow" | "ask">,
-): Record<string, "allow" | "ask"> {
-  return { ...DEFAULT_RULES, ...userRules, ...projectRules, ...sessionRules };
+  userRules: Record<string, RuleAction>,
+  projectRules: Record<string, RuleAction>,
+  sessionRules: Record<string, RuleAction>,
+): Record<string, RuleAction> {
+  const merged = { ...DEFAULT_RULES, ...userRules, ...projectRules, ...sessionRules };
+
+  // Re-apply deny from every layer so no later layer can override a veto.
+  for (const layer of [DEFAULT_RULES, userRules, projectRules, sessionRules]) {
+    for (const [key, action] of Object.entries(layer)) {
+      if (action === "deny") merged[key] = "deny";
+    }
+  }
+
+  return merged;
 }
 
 /** Load project-level unbash config from .pi/settings.json in the given directory. */
@@ -85,24 +99,24 @@ export function validateLoadedUnbashConfig(input: unknown): LoadedConfigResult {
     warnings.push("enabled must be a boolean");
   }
 
-  let rules: Record<string, "allow" | "ask"> = {};
+  let rules: Record<string, RuleAction> = {};
   if (cfg.rules !== undefined) {
     if (cfg.rules && typeof cfg.rules === "object" && !Array.isArray(cfg.rules)) {
-      const validRules: Record<string, "allow" | "ask"> = {};
+      const validRules: Record<string, RuleAction> = {};
       let hasInvalid = false;
       for (const [key, value] of Object.entries(cfg.rules as Record<string, unknown>)) {
-        if (typeof key === "string" && key.trim().length > 0 && (value === "allow" || value === "ask")) {
+        if (typeof key === "string" && key.trim().length > 0 && (value === "allow" || value === "ask" || value === "deny")) {
           validRules[key] = value;
         } else {
           hasInvalid = true;
         }
       }
       if (hasInvalid) {
-        warnings.push('rules must be an object mapping non-empty strings to "allow" or "ask"');
+        warnings.push('rules must be an object mapping non-empty strings to "allow", "ask", or "deny"');
       }
       rules = validRules;
     } else {
-      warnings.push('rules must be an object mapping non-empty strings to "allow" or "ask"');
+      warnings.push('rules must be an object mapping non-empty strings to "allow", "ask", or "deny"');
     }
   }
 
@@ -197,7 +211,7 @@ export default function (pi: ExtensionAPI) {
   const loaded = loadConfig();
   let config = loaded.config;
   let configWarning = loaded.warning;
-  const sessionRules: Record<string, "allow" | "ask"> = {};
+  const sessionRules: Record<string, RuleAction> = {};
 
   if (configWarning) {
     console.warn(`[pi-unbash] ${configWarning}`);
@@ -318,9 +332,18 @@ export default function (pi: ExtensionAPI) {
 
     const effectiveRules = buildEffectiveRules(config.rules, projectRules, sessionRules);
 
-    const unauthorizedCommands = allCommands.filter(
-      cmd => resolveCommandAction(cmd, effectiveRules) !== "allow"
-    );
+    const commandActions = allCommands.map(cmd => ({ cmd, action: resolveCommandAction(cmd, effectiveRules) }));
+
+    const deniedCommands = commandActions.filter(({ action }) => action === "deny").map(({ cmd }) => cmd);
+
+    if (deniedCommands.length > 0) {
+      return {
+        block: true,
+        reason: `Commands [${deniedCommands.map(c => formatCommand(c, { maxLength: config.commandDisplayMaxLength, argMaxLength: config.commandDisplayArgMaxLength })).join(", ")}] are explicitly denied by policy.`
+      };
+    }
+
+    const unauthorizedCommands = commandActions.filter(({ action }) => action !== "allow").map(({ cmd }) => cmd);
 
     if (unauthorizedCommands.length === 0) {
       return;

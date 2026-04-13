@@ -47,10 +47,23 @@ test("validateLoadedUnbashConfig", async (t) => {
     });
     assert.deepEqual(result.config, {
       enabled: true,
-      rules: { "git": "allow", "rg": "ask" },
+      rules: { "git": "allow", "curl": "deny", "rg": "ask" },
       ...displayDefaults,
     });
     assert.ok(result.warning?.includes("rules"));
+  });
+
+  await t.test("accepts deny action in rules", () => {
+    const result = validateLoadedUnbashConfig({
+      enabled: true,
+      rules: { "terraform destroy": "deny", "kubectl delete namespace": "deny", "kubectl delete": "ask" },
+    });
+    assert.deepEqual(result.config, {
+      enabled: true,
+      rules: { "terraform destroy": "deny", "kubectl delete namespace": "deny", "kubectl delete": "ask" },
+      ...displayDefaults,
+    });
+    assert.equal(result.warning, undefined);
   });
 
   await t.test("accepts custom display settings", () => {
@@ -83,10 +96,10 @@ test("getUnbashConfigFromSettings", async (t) => {
 });
 
 test("DEFAULT_RULES", async (t) => {
-  await t.test("all values are allow or ask", () => {
+  await t.test("all values are allow, ask, or deny", () => {
     for (const [pattern, action] of Object.entries(DEFAULT_RULES)) {
       assert.ok(
-        action === "allow" || action === "ask",
+        action === "allow" || action === "ask" || action === "deny",
         `DEFAULT_RULES["${pattern}"] has invalid action "${action}"`,
       );
     }
@@ -155,5 +168,25 @@ test("buildEffectiveRules", async (t) => {
     const result = buildEffectiveRules({ "git": "ask" }, { "git": "allow" }, { "curl": "allow" });
     assert.equal(result["git"], "allow");
     assert.equal(result["curl"], "allow");
+  });
+
+  await t.test("deny from user layer cannot be overridden by project allow", () => {
+    const result = buildEffectiveRules({ "rm": "deny" }, { "rm": "allow" }, {});
+    assert.equal(result["rm"], "deny");
+  });
+
+  await t.test("deny from user layer cannot be overridden by session allow", () => {
+    const result = buildEffectiveRules({ "rm": "deny" }, {}, { "rm": "allow" });
+    assert.equal(result["rm"], "deny");
+  });
+
+  await t.test("deny from project layer cannot be overridden by session allow", () => {
+    const result = buildEffectiveRules({}, { "terraform destroy": "deny" }, { "terraform destroy": "allow" });
+    assert.equal(result["terraform destroy"], "deny");
+  });
+
+  await t.test("deny from any layer beats allow from all other layers", () => {
+    const result = buildEffectiveRules({ "kubectl delete": "allow" }, { "kubectl delete": "allow" }, { "kubectl delete": "deny" });
+    assert.equal(result["kubectl delete"], "deny");
   });
 });
