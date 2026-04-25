@@ -217,6 +217,46 @@ export default function (pi: ExtensionAPI) {
     console.warn(`[pi-unbash] ${configWarning}`);
   }
 
+  function setUnbashStatus(ctx: { ui: { setStatus: (key: string, text: string) => void; theme: { fg: (color: string, text: string) => string } } }, enabled: boolean) {
+    if (enabled) {
+      ctx.ui.setStatus("unbash", ctx.ui.theme.fg("accent", "🛡️ unbash: ON"));
+    } else {
+      ctx.ui.setStatus("unbash", ctx.ui.theme.fg("warning", "🛡️ unbash: OFF"));
+    }
+  }
+
+  pi.on("session_start", async (_event, ctx) => {
+    setUnbashStatus(ctx, config.enabled);
+  });
+
+  pi.registerCommand("unbash-enable", {
+    description: "Enable pi-unbash command approval",
+    handler: async (_args, ctx) => {
+      if (config.enabled) {
+        ctx.ui.notify("pi-unbash is already enabled", "info");
+        return;
+      }
+      config.enabled = true;
+      saveConfig(config);
+      setUnbashStatus(ctx, true);
+      ctx.ui.notify("pi-unbash enabled", "info");
+    },
+  });
+
+  pi.registerCommand("unbash-disable", {
+    description: "Disable pi-unbash command approval",
+    handler: async (_args, ctx) => {
+      if (!config.enabled) {
+        ctx.ui.notify("pi-unbash is already disabled", "info");
+        return;
+      }
+      config.enabled = false;
+      saveConfig(config);
+      setUnbashStatus(ctx, false);
+      ctx.ui.notify("pi-unbash disabled", "warning");
+    },
+  });
+
   // Settings Management Command
   pi.registerCommand("unbash", {
     description: "Manage pi-unbash security settings",
