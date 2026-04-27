@@ -39,8 +39,5 @@
   },
   "peerDependencies": {
     "@mariozechner/pi-coding-agent": "*"
-  },
-  "devDependencies": {
-    "@mariozechner/pi-coding-agent": "*"
   }
 }
