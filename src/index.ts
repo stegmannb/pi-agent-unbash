@@ -217,16 +217,17 @@ export default function (pi: ExtensionAPI) {
     console.warn(`[pi-unbash] ${configWarning}`);
   }
 
-  function setUnbashStatus(ctx: { ui: { setStatus: (key: string, text: string) => void; theme: { fg: (color: string, text: string) => string } } }, enabled: boolean) {
+  function setUnbashStatus(ctx: { ui: { setStatus: (key: string, text: string) => void; theme: { fg: (color: string, text: string) => string } } }, enabled: boolean, cfg?: UnbashConfig) {
     if (enabled) {
-      ctx.ui.setStatus("unbash", ctx.ui.theme.fg("accent", "🛡️ unbash: ON"));
+      const totalRules = Object.keys(DEFAULT_RULES).length + Object.keys(cfg?.rules ?? {}).length;
+      ctx.ui.setStatus("unbash", ctx.ui.theme.fg("accent", `🛡️  Unbash: ${totalRules} rules`));
     } else {
-      ctx.ui.setStatus("unbash", ctx.ui.theme.fg("warning", "🛡️ unbash: OFF"));
+      ctx.ui.setStatus("unbash", "");
     }
   }
 
   pi.on("session_start", async (_event, ctx) => {
-    setUnbashStatus(ctx, config.enabled);
+    setUnbashStatus(ctx, config.enabled, config);
   });
 
   pi.registerCommand("unbash-enable", {
@@ -238,7 +239,7 @@ export default function (pi: ExtensionAPI) {
       }
       config.enabled = true;
       saveConfig(config);
-      setUnbashStatus(ctx, true);
+      setUnbashStatus(ctx, true, config);
       ctx.ui.notify("pi-unbash enabled", "info");
     },
   });
@@ -252,7 +253,7 @@ export default function (pi: ExtensionAPI) {
       }
       config.enabled = false;
       saveConfig(config);
-      setUnbashStatus(ctx, false);
+      setUnbashStatus(ctx, false, config);
       ctx.ui.notify("pi-unbash disabled", "warning");
     },
   });
