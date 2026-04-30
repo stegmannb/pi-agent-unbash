@@ -222,7 +222,7 @@ export default function (pi: ExtensionAPI) {
       const totalRules = Object.keys(DEFAULT_RULES).length + Object.keys(cfg?.rules ?? {}).length;
       ctx.ui.setStatus("unbash", ctx.ui.theme.fg("accent", `🛡️  Unbash: ${totalRules} rules`));
     } else {
-      ctx.ui.setStatus("unbash", "");
+      ctx.ui.setStatus("unbash", "🛡️ Unbash: off");
     }
   }
 
@@ -234,13 +234,13 @@ export default function (pi: ExtensionAPI) {
     description: "Enable pi-unbash command approval",
     handler: async (_args, ctx) => {
       if (config.enabled) {
-        ctx.ui.notify("pi-unbash is already enabled", "info");
+        ctx.ui.notify("Unbash is already enabled", "info");
         return;
       }
       config.enabled = true;
       saveConfig(config);
       setUnbashStatus(ctx, true, config);
-      ctx.ui.notify("pi-unbash enabled", "info");
+      ctx.ui.notify("Unbash enabled", "info");
     },
   });
 
@@ -248,13 +248,13 @@ export default function (pi: ExtensionAPI) {
     description: "Disable pi-unbash command approval",
     handler: async (_args, ctx) => {
       if (!config.enabled) {
-        ctx.ui.notify("pi-unbash is already disabled", "info");
+        ctx.ui.notify("Unbash is already disabled", "info");
         return;
       }
       config.enabled = false;
       saveConfig(config);
       setUnbashStatus(ctx, false, config);
-      ctx.ui.notify("pi-unbash disabled", "warning");
+      ctx.ui.notify("Unbash disabled", "warning");
     },
   });
 
@@ -276,7 +276,7 @@ export default function (pi: ExtensionAPI) {
       } else if (action === "toggle") {
         config.enabled = !config.enabled;
         saveConfig(config);
-        ctx.ui.notify(`pi-unbash is now ${config.enabled ? "ENABLED" : "DISABLED"}`, "info");
+        ctx.ui.notify(`Unbash is now ${config.enabled ? "ENABLED" : "DISABLED"}`, "info");
       } else if (action === "list") {
         const defaultLines = Object.entries(DEFAULT_RULES)
           .map(([pattern, act]) => `  ${pattern}: ${act}`)
