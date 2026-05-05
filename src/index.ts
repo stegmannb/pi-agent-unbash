@@ -243,6 +243,13 @@ export default function (pi: ExtensionAPI) {
   let configWarning = loaded.warning;
   const sessionRules: Record<string, RuleAction> = {};
 
+  // Session-only enabled override — null means "use config.enabled", like sandbox's userDisabled.
+  let sessionEnabled: boolean | null = null;
+
+  function isEnabled(): boolean {
+    return sessionEnabled !== null ? sessionEnabled : config.enabled;
+  }
+
   if (configWarning) {
     console.warn(`[pi-unbash] ${configWarning}`);
   }
@@ -257,48 +264,32 @@ export default function (pi: ExtensionAPI) {
   }
 
   pi.on("session_start", async (_event, ctx) => {
-    setUnbashStatus(ctx, config.enabled, config);
+    setUnbashStatus(ctx, isEnabled(), config);
   });
 
   pi.registerCommand("unbash-enable", {
-    description: "Enable pi-unbash command approval",
+    description: "Enable pi-unbash command approval for this session",
     handler: async (_args, ctx) => {
-      if (config.enabled) {
+      if (isEnabled()) {
         ctx.ui.notify("Unbash is already enabled", "info");
         return;
       }
-      if (!isConfigWritable(GLOBAL_CONFIG_PATH)) {
-        ctx.ui.notify(
-          `unbash.json is read-only (managed by Nix). Edit your pi-coding.nix to change \`enabled\`.`,
-          "warning",
-        );
-        return;
-      }
-      config.enabled = true;
-      saveConfig(config);
+      sessionEnabled = true;
       setUnbashStatus(ctx, true, config);
-      ctx.ui.notify("Unbash enabled", "info");
+      ctx.ui.notify("Unbash enabled (this session only)", "info");
     },
   });
 
   pi.registerCommand("unbash-disable", {
-    description: "Disable pi-unbash command approval",
+    description: "Disable pi-unbash command approval for this session",
     handler: async (_args, ctx) => {
-      if (!config.enabled) {
+      if (!isEnabled()) {
         ctx.ui.notify("Unbash is already disabled", "info");
         return;
       }
-      if (!isConfigWritable(GLOBAL_CONFIG_PATH)) {
-        ctx.ui.notify(
-          `unbash.json is read-only (managed by Nix). Edit your pi-coding.nix to change \`enabled\`.`,
-          "warning",
-        );
-        return;
-      }
-      config.enabled = false;
-      saveConfig(config);
+      sessionEnabled = false;
       setUnbashStatus(ctx, false, config);
-      ctx.ui.notify("Unbash disabled", "warning");
+      ctx.ui.notify("Unbash disabled (this session only)", "warning");
     },
   });
 
@@ -318,9 +309,9 @@ export default function (pi: ExtensionAPI) {
         saveConfig(config);
         ctx.ui.notify(`'${target}' added to allowed commands.`, "info");
       } else if (action === "toggle") {
-        config.enabled = !config.enabled;
-        saveConfig(config);
-        ctx.ui.notify(`Unbash is now ${config.enabled ? "ENABLED" : "DISABLED"}`, "info");
+        sessionEnabled = !isEnabled();
+        setUnbashStatus(ctx, isEnabled(), config);
+        ctx.ui.notify(`Unbash is now ${isEnabled() ? "ENABLED" : "DISABLED"} (this session only)`, "info");
       } else if (action === "list") {
         const defaultLines = Object.entries(DEFAULT_RULES)
           .map(([pattern, act]) => `  ${pattern}: ${act}`)
@@ -361,7 +352,7 @@ export default function (pi: ExtensionAPI) {
       configWarning = undefined;
     }
 
-    if (!config.enabled) return;
+    if (!isEnabled()) return;
     if (!isToolCallEventType("bash", event)) return;
 
     const rawCmd = event.input.command;
