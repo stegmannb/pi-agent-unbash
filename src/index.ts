@@ -264,7 +264,11 @@ export default function (pi: ExtensionAPI) {
   }
 
   pi.on("session_start", async (_event, ctx) => {
-    setUnbashStatus(ctx, isEnabled(), config);
+    const enabled = isEnabled();
+    setUnbashStatus(ctx, enabled, config);
+    if (sessionEnabled === false) {
+      ctx.ui.notify("Unbash disabled (user override active)", "warning");
+    }
   });
 
   pi.registerCommand("unbash-enable", {
