@@ -87,16 +87,24 @@ function loadProjectConfig(cwd: string): LoadedConfigResult | null {
  * "Allow globally" option when it would always fail.
  */
 function isConfigWritable(filePath: string): boolean {
-  try {
-    fs.accessSync(filePath, fs.constants.W_OK);
-    return true;
-  } catch {
+  if (fs.existsSync(filePath)) {
+    // File already exists (may be a read-only Nix-store symlink).
+    // Only the file itself determines writeability; a writable parent
+    // directory does NOT help because we cannot overwrite through a
+    // read-only symlink by creating a new file at the same path.
     try {
-      fs.accessSync(path.dirname(filePath), fs.constants.W_OK);
+      fs.accessSync(filePath, fs.constants.W_OK);
       return true;
     } catch {
       return false;
     }
+  }
+  // File does not exist yet — check whether we can create it.
+  try {
+    fs.accessSync(path.dirname(filePath), fs.constants.W_OK);
+    return true;
+  } catch {
+    return false;
   }
 }
 
