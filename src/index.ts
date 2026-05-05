@@ -11,8 +11,8 @@ import { buildApprovalPrompt } from "./prompt.ts";
 import { DEFAULT_RULES } from "./defaults.ts";
 import type { RuleAction } from "./types.ts";
 
-const AGENT_DIR = path.join(os.homedir(), ".pi", "agent");
-const SETTINGS_PATH = path.join(AGENT_DIR, "settings.json");
+const AGENT_DIR = process.env.PI_CODING_AGENT_DIR ?? path.join(os.homedir(), ".pi", "agent");
+const GLOBAL_CONFIG_PATH = path.join(AGENT_DIR, "unbash.json");
 
 interface UnbashConfig {
   enabled: boolean;
@@ -62,22 +62,65 @@ export function buildEffectiveRules(
   return merged;
 }
 
-/** Load project-level unbash config from .pi/settings.json in the given directory. */
+/** Load project-level unbash config from .pi/unbash.json in the given directory. */
 function loadProjectConfig(cwd: string): LoadedConfigResult | null {
-  const projectSettingsPath = path.join(cwd, ".pi", "settings.json");
-  if (!fs.existsSync(projectSettingsPath)) {
+  const projectConfigPath = path.join(cwd, ".pi", "unbash.json");
+  if (!fs.existsSync(projectConfigPath)) {
     return null;
   }
   try {
-    const data = fs.readFileSync(projectSettingsPath, "utf-8");
+    const data = fs.readFileSync(projectConfigPath, "utf-8");
     const parsed = JSON.parse(data);
-    const result = getUnbashConfigFromSettings(parsed);
-    return result;
+    return validateLoadedUnbashConfig(parsed);
   } catch (e) {
     return {
       config: { ...SAFE_FALLBACK_CONFIG },
-      warning: "Failed to parse project .pi/settings.json; using safe fallback.",
+      warning: "Failed to parse project .pi/unbash.json; using safe fallback.",
     };
+  }
+}
+
+/**
+ * Returns true if `filePath` is writable by the current process.
+ * If the file does not yet exist, checks whether its parent directory is writable.
+ * Used to detect read-only configs (e.g. Nix-store symlinks) and hide the
+ * "Allow globally" option when it would always fail.
+ */
+function isConfigWritable(filePath: string): boolean {
+  try {
+    fs.accessSync(filePath, fs.constants.W_OK);
+    return true;
+  } catch {
+    try {
+      fs.accessSync(path.dirname(filePath), fs.constants.W_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+/**
+ * Adds a single rule to a config file (project or global).
+ * Creates the file if it does not yet exist.
+ * Preserves all other existing config values.
+ */
+function saveRuleToConfig(configPath: string, commandName: string, action: RuleAction): void {
+  try {
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    let existing: Partial<UnbashConfig> = {};
+    if (fs.existsSync(configPath)) {
+      const raw = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+      const result = validateLoadedUnbashConfig(raw);
+      existing = result.config;
+    }
+    const updated = {
+      ...existing,
+      rules: { ...(existing.rules ?? {}), [commandName]: action },
+    };
+    fs.writeFileSync(configPath, JSON.stringify(updated, null, 2) + "\n", "utf-8");
+  } catch (e) {
+    console.error(`Failed to save rule to ${configPath}`, e);
   }
 }
 
@@ -144,30 +187,16 @@ export function validateLoadedUnbashConfig(input: unknown): LoadedConfigResult {
   return { config: { enabled, rules, commandDisplayMaxLength, commandDisplayArgMaxLength } };
 }
 
-export function getUnbashConfigFromSettings(input: unknown): LoadedConfigResult {
-  if (!input || typeof input !== "object") {
-    return { config: DEFAULT_CONFIG };
-  }
-
-  const settings = input as Record<string, unknown>;
-
-  if (!Object.hasOwn(settings, "unbash")) {
-    return { config: DEFAULT_CONFIG };
-  }
-
-  return validateLoadedUnbashConfig(settings.unbash);
-}
-
 function loadConfig(): LoadedConfigResult {
-  if (fs.existsSync(SETTINGS_PATH)) {
+  if (fs.existsSync(GLOBAL_CONFIG_PATH)) {
     try {
-      const data = fs.readFileSync(SETTINGS_PATH, "utf-8");
+      const data = fs.readFileSync(GLOBAL_CONFIG_PATH, "utf-8");
       const parsed = JSON.parse(data);
-      return getUnbashConfigFromSettings(parsed);
+      return validateLoadedUnbashConfig(parsed);
     } catch (e) {
       return {
         config: { ...SAFE_FALLBACK_CONFIG },
-        warning: "Failed to parse settings.json; using safe fallback (enabled=true, rules={}).",
+        warning: "Failed to parse unbash.json; using safe fallback (enabled=true, rules={}).",
       };
     }
   }
@@ -176,24 +205,17 @@ function loadConfig(): LoadedConfigResult {
 
 function saveConfig(config: UnbashConfig) {
   try {
-    fs.mkdirSync(AGENT_DIR, { recursive: true });
-
-    let settings: any = {};
-    if (fs.existsSync(SETTINGS_PATH)) {
-      settings = JSON.parse(fs.readFileSync(SETTINGS_PATH, "utf-8"));
-    }
-
+    fs.mkdirSync(path.dirname(GLOBAL_CONFIG_PATH), { recursive: true });
     // Only save user rules, never the merged effective set
-    settings.unbash = {
+    const toSave: Record<string, unknown> = {
       enabled: config.enabled,
       rules: config.rules,
       ...(config.commandDisplayMaxLength !== FORMAT_COMMAND_DEFAULT_MAX_LENGTH && { commandDisplayMaxLength: config.commandDisplayMaxLength }),
       ...(config.commandDisplayArgMaxLength !== FORMAT_COMMAND_DEFAULT_ARG_MAX_LENGTH && { commandDisplayArgMaxLength: config.commandDisplayArgMaxLength }),
     };
-
-    fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2), "utf-8");
+    fs.writeFileSync(GLOBAL_CONFIG_PATH, JSON.stringify(toSave, null, 2) + "\n", "utf-8");
   } catch (e) {
-    console.error("Failed to save unbash config to settings.json", e);
+    console.error("Failed to save unbash config to unbash.json", e);
   }
 }
 
@@ -237,6 +259,13 @@ export default function (pi: ExtensionAPI) {
         ctx.ui.notify("Unbash is already enabled", "info");
         return;
       }
+      if (!isConfigWritable(GLOBAL_CONFIG_PATH)) {
+        ctx.ui.notify(
+          `unbash.json is read-only (managed by Nix). Edit your pi-coding.nix to change \`enabled\`.`,
+          "warning",
+        );
+        return;
+      }
       config.enabled = true;
       saveConfig(config);
       setUnbashStatus(ctx, true, config);
@@ -249,6 +278,13 @@ export default function (pi: ExtensionAPI) {
     handler: async (_args, ctx) => {
       if (!config.enabled) {
         ctx.ui.notify("Unbash is already disabled", "info");
+        return;
+      }
+      if (!isConfigWritable(GLOBAL_CONFIG_PATH)) {
+        ctx.ui.notify(
+          `unbash.json is read-only (managed by Nix). Edit your pi-coding.nix to change \`enabled\`.`,
+          "warning",
+        );
         return;
       }
       config.enabled = false;
@@ -282,6 +318,7 @@ export default function (pi: ExtensionAPI) {
           .map(([pattern, act]) => `  ${pattern}: ${act}`)
           .join("\n");
 
+        const globalWritable = isConfigWritable(GLOBAL_CONFIG_PATH);
         const userLines = Object.entries(config.rules).length > 0
           ? Object.entries(config.rules).map(([pattern, act]) => `  ${pattern}: ${act}`).join("\n")
           : "  (none)";
@@ -297,8 +334,10 @@ export default function (pi: ExtensionAPI) {
           ? Object.entries(sessionRules).map(([pattern, act]) => `  ${pattern}: ${act}`).join("\n")
           : "  (none)";
 
+        const readOnlyNote = globalWritable ? "" : "\n⚠️  Global config is read-only (managed by Nix)";
+
         ctx.ui.notify(
-          `pi-unbash: ${config.enabled ? "ENABLED" : "DISABLED"}\n\nDefault rules:\n${defaultLines}\n\nUser rules (global):\n${userLines}\n\nProject rules:\n${projectLines}\n\nSession rules:\n${sessionLines}`,
+          `pi-unbash: ${config.enabled ? "ENABLED" : "DISABLED"}${readOnlyNote}\n\nGlobal config: ${GLOBAL_CONFIG_PATH}\nProject config: ${path.join(ctx.cwd, ".pi", "unbash.json")}\n\nDefault rules:\n${defaultLines}\n\nGlobal rules:\n${userLines}\n\nProject rules:\n${projectLines}\n\nSession rules:\n${sessionLines}`,
           "info"
         );
       } else {
@@ -398,7 +437,16 @@ export default function (pi: ExtensionAPI) {
     }
 
     const uniqueBaseNames = Array.from(new Set(unauthorizedCommands.map(getCommandName)));
-    const alwaysLabel = `Always allow ${uniqueBaseNames.join(", ")} (this session)`;
+    const projectConfigPath = path.join(ctx.cwd, ".pi", "unbash.json");
+    const globalWritable = isConfigWritable(GLOBAL_CONFIG_PATH);
+
+    const approvalOptions = [
+      "Allow (once)",
+      `Always allow (this session)`,
+      "Allow for this project  \u2192  .pi/unbash.json",
+      ...(globalWritable ? ["Allow globally  \u2192  unbash.json"] : []),
+      "Reject",
+    ];
 
     pi.events.emit("nudge", { body: "Command needs approval" });
     const choice = await ctx.ui.select(
@@ -406,18 +454,35 @@ export default function (pi: ExtensionAPI) {
         maxLength: config.commandDisplayMaxLength,
         argMaxLength: config.commandDisplayArgMaxLength,
       }),
-      ["Allow", alwaysLabel, "Reject"]
+      approvalOptions
     );
 
-    if (choice === alwaysLabel) {
+    if (choice?.startsWith("Always allow (this session)")) {
       for (const name of uniqueBaseNames) {
         sessionRules[name] = "allow";
       }
       return;
     }
 
-    if (choice !== "Allow") {
+    if (choice?.startsWith("Allow for this project")) {
+      for (const name of uniqueBaseNames) {
+        saveRuleToConfig(projectConfigPath, name, "allow");
+        sessionRules[name] = "allow";
+      }
+      return;
+    }
+
+    if (globalWritable && choice?.startsWith("Allow globally")) {
+      for (const name of uniqueBaseNames) {
+        saveRuleToConfig(GLOBAL_CONFIG_PATH, name, "allow");
+        sessionRules[name] = "allow";
+      }
+      return;
+    }
+
+    if (!choice || choice === "Reject" || !choice.startsWith("Allow")) {
       return { block: true, reason: "User denied execution." };
     }
+    // "Allow (once)" — fall through, command executes this time only
   });
 }
