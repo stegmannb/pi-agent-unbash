@@ -243,31 +243,50 @@ export default function (pi: ExtensionAPI) {
   let configWarning = loaded.warning;
   const sessionRules: Record<string, RuleAction> = {};
 
-  // Session-only enabled override — null means "use config.enabled", like sandbox's userDisabled.
+  // Cached project-level config — loaded at session_start, refreshed by /unbash reload.
+  let projectConfig: UnbashConfig | null = null;
+  let projectConfigWarning: string | undefined = undefined;
+
+  // Session-only enabled override — null means "defer to config + projectConfig".
   let sessionEnabled: boolean | null = null;
 
   function isEnabled(): boolean {
-    return sessionEnabled !== null ? sessionEnabled : config.enabled;
+    if (sessionEnabled !== null) return sessionEnabled;
+    if (projectConfig?.enabled === false) return false;
+    return config.enabled;
   }
 
   if (configWarning) {
     console.warn(`[pi-unbash] ${configWarning}`);
   }
 
-  function setUnbashStatus(ctx: { ui: { setStatus: (key: string, text: string) => void; theme: { fg: (color: string, text: string) => string } } }, enabled: boolean, cfg?: UnbashConfig) {
-    if (enabled) {
-      const totalRules = Object.keys(DEFAULT_RULES).length + Object.keys(cfg?.rules ?? {}).length;
+  type StatusCtx = { ui: { setStatus: (key: string, text: string) => void; theme: { fg: (color: string, text: string) => string } } };
+
+  function setUnbashStatus(ctx: StatusCtx) {
+    if (isEnabled()) {
+      const totalRules = Object.keys(DEFAULT_RULES).length + Object.keys(config.rules).length;
       ctx.ui.setStatus("unbash", ctx.ui.theme.fg("accent", `🛡️  Unbash: ${totalRules} rules`));
+    } else if (projectConfig?.enabled === false && sessionEnabled === null) {
+      ctx.ui.setStatus("unbash", "🛡️ Unbash: off (project)");
     } else {
       ctx.ui.setStatus("unbash", "🛡️ Unbash: off");
     }
   }
 
+  function loadAndCacheProjectConfig(cwd: string): void {
+    const result = loadProjectConfig(cwd);
+    projectConfig = result?.config ?? null;
+    projectConfigWarning = result?.warning;
+    if (projectConfigWarning) {
+      console.warn(`[pi-unbash] ${projectConfigWarning}`);
+    }
+  }
+
   pi.on("session_start", async (_event, ctx) => {
-    const enabled = isEnabled();
-    setUnbashStatus(ctx, enabled, config);
-    if (sessionEnabled === false) {
-      ctx.ui.notify("Unbash disabled (user override active)", "warning");
+    loadAndCacheProjectConfig(ctx.cwd);
+    setUnbashStatus(ctx);
+    if (projectConfig?.enabled === false && sessionEnabled === null) {
+      ctx.ui.notify("Unbash disabled by project config (.pi/unbash.json)", "warning");
     }
   });
 
@@ -279,7 +298,7 @@ export default function (pi: ExtensionAPI) {
         return;
       }
       sessionEnabled = true;
-      setUnbashStatus(ctx, true, config);
+      setUnbashStatus(ctx);
       ctx.ui.notify("Unbash enabled (this session only)", "info");
     },
   });
@@ -292,7 +311,7 @@ export default function (pi: ExtensionAPI) {
         return;
       }
       sessionEnabled = false;
-      setUnbashStatus(ctx, false, config);
+      setUnbashStatus(ctx);
       ctx.ui.notify("Unbash disabled (this session only)", "warning");
     },
   });
@@ -314,8 +333,15 @@ export default function (pi: ExtensionAPI) {
         ctx.ui.notify(`'${target}' added to allowed commands.`, "info");
       } else if (action === "toggle") {
         sessionEnabled = !isEnabled();
-        setUnbashStatus(ctx, isEnabled(), config);
+        setUnbashStatus(ctx);
         ctx.ui.notify(`Unbash is now ${isEnabled() ? "ENABLED" : "DISABLED"} (this session only)`, "info");
+      } else if (action === "reload") {
+        const reloadedGlobal = loadConfig();
+        config = reloadedGlobal.config;
+        configWarning = reloadedGlobal.warning;
+        loadAndCacheProjectConfig(ctx.cwd);
+        setUnbashStatus(ctx);
+        ctx.ui.notify("Unbash config reloaded", "info");
       } else if (action === "list") {
         const defaultLines = Object.entries(DEFAULT_RULES)
           .map(([pattern, act]) => `  ${pattern}: ${act}`)
@@ -327,8 +353,7 @@ export default function (pi: ExtensionAPI) {
           : "  (none)";
 
         // Load project rules for display
-        const projectResult = loadProjectConfig(ctx.cwd);
-        const projectRules = projectResult?.config.rules ?? {};
+        const projectRules = projectConfig?.rules ?? {};
         const projectLines = Object.entries(projectRules).length > 0
           ? Object.entries(projectRules).map(([pattern, act]) => `  ${pattern}: ${act}`).join("\n")
           : "  (none)";
@@ -339,15 +364,14 @@ export default function (pi: ExtensionAPI) {
 
         const readOnlyNote = globalWritable ? "" : "\n⚠️  Global config is read-only (managed by Nix)";
 
-        const projectEnabled = projectResult?.config.enabled;
-        const projectEnabledNote = projectEnabled === false ? " (disabled by project config)" : "";
+        const projectEnabledNote = projectConfig?.enabled === false ? " (disabled by project config)" : "";
 
         ctx.ui.notify(
           `pi-unbash: ${isEnabled() ? "ENABLED" : "DISABLED"}${projectEnabledNote}${readOnlyNote}\n\nGlobal config: ${GLOBAL_CONFIG_PATH}\nProject config: ${path.join(ctx.cwd, ".pi", "unbash.json")}\n\nDefault rules:\n${defaultLines}\n\nGlobal rules:\n${userLines}\n\nProject rules:\n${projectLines}\n\nSession rules:\n${sessionLines}`,
           "info"
         );
       } else {
-        ctx.ui.notify("Usage: /unbash <allow|toggle|list> [command]", "warning");
+        ctx.ui.notify("Usage: /unbash <allow|reload|toggle|list> [command]", "warning");
       }
     }
   });
@@ -409,16 +433,16 @@ export default function (pi: ExtensionAPI) {
 
     if (allCommands.length === 0) return;
 
-    // Load project-level config from ctx.cwd/.pi/unbash.json
-    const projectResult = loadProjectConfig(ctx.cwd);
-    if (projectResult?.warning && ctx.hasUI) {
-      ctx.ui.notify(`[pi-unbash] ${projectResult.warning}`, "warning");
+    // Use cached project config (loaded at session_start, refreshed by /unbash reload)
+    if (projectConfigWarning && ctx.hasUI) {
+      ctx.ui.notify(`[pi-unbash] ${projectConfigWarning}`, "warning");
+      projectConfigWarning = undefined;
     }
 
     // If project config explicitly disables unbash, skip interception
-    if (projectResult?.config.enabled === false) return;
+    if (projectConfig?.enabled === false) return;
 
-    const projectRules = projectResult?.config.rules ?? {};
+    const projectRules = projectConfig?.rules ?? {};
 
     const effectiveRules = buildEffectiveRules(config.rules, projectRules, sessionRules);
 
