@@ -339,8 +339,11 @@ export default function (pi: ExtensionAPI) {
 
         const readOnlyNote = globalWritable ? "" : "\n⚠️  Global config is read-only (managed by Nix)";
 
+        const projectEnabled = projectResult?.config.enabled;
+        const projectEnabledNote = projectEnabled === false ? " (disabled by project config)" : "";
+
         ctx.ui.notify(
-          `pi-unbash: ${config.enabled ? "ENABLED" : "DISABLED"}${readOnlyNote}\n\nGlobal config: ${GLOBAL_CONFIG_PATH}\nProject config: ${path.join(ctx.cwd, ".pi", "unbash.json")}\n\nDefault rules:\n${defaultLines}\n\nGlobal rules:\n${userLines}\n\nProject rules:\n${projectLines}\n\nSession rules:\n${sessionLines}`,
+          `pi-unbash: ${isEnabled() ? "ENABLED" : "DISABLED"}${projectEnabledNote}${readOnlyNote}\n\nGlobal config: ${GLOBAL_CONFIG_PATH}\nProject config: ${path.join(ctx.cwd, ".pi", "unbash.json")}\n\nDefault rules:\n${defaultLines}\n\nGlobal rules:\n${userLines}\n\nProject rules:\n${projectLines}\n\nSession rules:\n${sessionLines}`,
           "info"
         );
       } else {
@@ -406,12 +409,16 @@ export default function (pi: ExtensionAPI) {
 
     if (allCommands.length === 0) return;
 
-    // Load project-level config from ctx.cwd/.pi/settings.json
+    // Load project-level config from ctx.cwd/.pi/unbash.json
     const projectResult = loadProjectConfig(ctx.cwd);
-    const projectRules = projectResult?.config.rules ?? {};
     if (projectResult?.warning && ctx.hasUI) {
       ctx.ui.notify(`[pi-unbash] ${projectResult.warning}`, "warning");
     }
+
+    // If project config explicitly disables unbash, skip interception
+    if (projectResult?.config.enabled === false) return;
+
+    const projectRules = projectResult?.config.rules ?? {};
 
     const effectiveRules = buildEffectiveRules(config.rules, projectRules, sessionRules);
 
