@@ -9,6 +9,15 @@ import { getCommandName, resolveCommandAction } from "./resolve.ts";
 import { formatCommand, FORMAT_COMMAND_DEFAULT_MAX_LENGTH, FORMAT_COMMAND_DEFAULT_ARG_MAX_LENGTH } from "./format.ts";
 import { buildApprovalPrompt } from "./prompt.ts";
 import { DEFAULT_RULES } from "./defaults.ts";
+import {
+  getConfiguredEnabled,
+  getDisabledCommandState,
+  getEnabledCommandState,
+  getReloadState,
+  getSessionStartState,
+  getToggledCommandState,
+  hasSessionOverride,
+} from "./state.ts";
 import type { RuleAction } from "./types.ts";
 
 const AGENT_DIR = process.env.PI_CODING_AGENT_DIR ?? path.join(os.homedir(), ".pi", "agent");
@@ -247,13 +256,11 @@ export default function (pi: ExtensionAPI) {
   let projectConfig: UnbashConfig | null = null;
   let projectConfigWarning: string | undefined = undefined;
 
-  // Session-only enabled override — null means "defer to config + projectConfig".
-  let sessionEnabled: boolean | null = null;
+  let unbashEnabled = false;
+  let userDisabled = false; // set by /unbash-disable; prevents session_start and /unbash reload from re-enabling
 
-  function isEnabled(): boolean {
-    if (sessionEnabled !== null) return sessionEnabled;
-    if (projectConfig?.enabled === false) return false;
-    return config.enabled;
+  function hasSessionOverrideForCurrentState(): boolean {
+    return hasSessionOverride(unbashEnabled, config.enabled, projectConfig?.enabled);
   }
 
   if (configWarning) {
@@ -263,10 +270,10 @@ export default function (pi: ExtensionAPI) {
   type StatusCtx = { ui: { setStatus: (key: string, text: string) => void; theme: { fg: (color: string, text: string) => string } } };
 
   function setUnbashStatus(ctx: StatusCtx) {
-    if (isEnabled()) {
+    if (unbashEnabled) {
       const totalRules = Object.keys(DEFAULT_RULES).length + Object.keys(config.rules).length;
       ctx.ui.setStatus("unbash", ctx.ui.theme.fg("accent", `🛡️  Unbash: ${totalRules} rules`));
-    } else if (projectConfig?.enabled === false && sessionEnabled === null) {
+    } else if (projectConfig?.enabled === false && !userDisabled) {
       ctx.ui.setStatus("unbash", "🛡️ Unbash: off (project)");
     } else {
       ctx.ui.setStatus("unbash", "🛡️ Unbash: off");
@@ -284,8 +291,18 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     loadAndCacheProjectConfig(ctx.cwd);
+
+    const nextState = getSessionStartState(config.enabled, projectConfig?.enabled, userDisabled);
+    unbashEnabled = nextState.unbashEnabled;
+    userDisabled = nextState.userDisabled;
     setUnbashStatus(ctx);
-    if (projectConfig?.enabled === false && sessionEnabled === null) {
+
+    if (userDisabled) {
+      ctx.ui.notify("Unbash disabled (user override active)", "warning");
+      return;
+    }
+
+    if (projectConfig?.enabled === false) {
       ctx.ui.notify("Unbash disabled by project config (.pi/unbash.json)", "warning");
     }
   });
@@ -293,11 +310,11 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("unbash-enable", {
     description: "Enable pi-unbash command approval for this session",
     handler: async (_args, ctx) => {
-      if (isEnabled()) {
+      if (unbashEnabled) {
         ctx.ui.notify("Unbash is already enabled", "info");
         return;
       }
-      sessionEnabled = true;
+      ({ unbashEnabled, userDisabled } = getEnabledCommandState());
       setUnbashStatus(ctx);
       ctx.ui.notify("Unbash enabled (this session only)", "info");
     },
@@ -306,11 +323,11 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("unbash-disable", {
     description: "Disable pi-unbash command approval for this session",
     handler: async (_args, ctx) => {
-      if (!isEnabled()) {
+      if (!unbashEnabled) {
         ctx.ui.notify("Unbash is already disabled", "info");
         return;
       }
-      sessionEnabled = false;
+      ({ unbashEnabled, userDisabled } = getDisabledCommandState());
       setUnbashStatus(ctx);
       ctx.ui.notify("Unbash disabled (this session only)", "warning");
     },
@@ -332,14 +349,19 @@ export default function (pi: ExtensionAPI) {
         saveConfig(config);
         ctx.ui.notify(`'${target}' added to allowed commands.`, "info");
       } else if (action === "toggle") {
-        sessionEnabled = !isEnabled();
+        ({ unbashEnabled, userDisabled } = getToggledCommandState(unbashEnabled));
         setUnbashStatus(ctx);
-        ctx.ui.notify(`Unbash is now ${isEnabled() ? "ENABLED" : "DISABLED"} (this session only)`, "info");
+        ctx.ui.notify(`Unbash is now ${unbashEnabled ? "ENABLED" : "DISABLED"} (this session only)`, "info");
       } else if (action === "reload") {
         const reloadedGlobal = loadConfig();
         config = reloadedGlobal.config;
         configWarning = reloadedGlobal.warning;
         loadAndCacheProjectConfig(ctx.cwd);
+        ({ unbashEnabled, userDisabled } = getReloadState(
+          { unbashEnabled, userDisabled },
+          config.enabled,
+          projectConfig?.enabled,
+        ));
         setUnbashStatus(ctx);
         ctx.ui.notify("Unbash config reloaded", "info");
       } else if (action === "list") {
@@ -362,12 +384,15 @@ export default function (pi: ExtensionAPI) {
           ? Object.entries(sessionRules).map(([pattern, act]) => `  ${pattern}: ${act}`).join("\n")
           : "  (none)";
 
+        const sessionOverrideNote = hasSessionOverrideForCurrentState() ? "\n⚠️  Session override active" : "";
         const readOnlyNote = globalWritable ? "" : "\n⚠️  Global config is read-only (managed by Nix)";
 
-        const projectEnabledNote = projectConfig?.enabled === false ? " (disabled by project config)" : "";
+        const projectEnabledNote = projectConfig?.enabled === false && !userDisabled
+          ? " (disabled by project config)"
+          : "";
 
         ctx.ui.notify(
-          `pi-unbash: ${isEnabled() ? "ENABLED" : "DISABLED"}${projectEnabledNote}${readOnlyNote}\n\nGlobal config: ${GLOBAL_CONFIG_PATH}\nProject config: ${path.join(ctx.cwd, ".pi", "unbash.json")}\n\nDefault rules:\n${defaultLines}\n\nGlobal rules:\n${userLines}\n\nProject rules:\n${projectLines}\n\nSession rules:\n${sessionLines}`,
+          `pi-unbash: ${unbashEnabled ? "ENABLED" : "DISABLED"}${projectEnabledNote}${sessionOverrideNote}${readOnlyNote}\n\nGlobal config: ${GLOBAL_CONFIG_PATH}\nProject config: ${path.join(ctx.cwd, ".pi", "unbash.json")}\n\nDefault rules:\n${defaultLines}\n\nGlobal rules:\n${userLines}\n\nProject rules:\n${projectLines}\n\nSession rules:\n${sessionLines}`,
           "info"
         );
       } else {
@@ -383,7 +408,7 @@ export default function (pi: ExtensionAPI) {
       configWarning = undefined;
     }
 
-    if (!isEnabled()) return;
+    if (!unbashEnabled) return;
     if (!isToolCallEventType("bash", event)) return;
 
     const rawCmd = event.input.command;
@@ -438,9 +463,6 @@ export default function (pi: ExtensionAPI) {
       ctx.ui.notify(`[pi-unbash] ${projectConfigWarning}`, "warning");
       projectConfigWarning = undefined;
     }
-
-    // If project config explicitly disables unbash, skip interception
-    if (projectConfig?.enabled === false) return;
 
     const projectRules = projectConfig?.rules ?? {};
 
