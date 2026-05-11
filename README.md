@@ -24,10 +24,8 @@ If the AI tries to sneak an unapproved command past you, `pi-unbash` will catch 
 
 ```bash
 direnv allow
-nix develop
+devenv shell
 ```
-
-The flake also exposes a reproducible devenv-based dev shell.
 
 Build the Nix package with:
 
