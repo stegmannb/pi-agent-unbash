@@ -18,6 +18,30 @@ That same AST also makes the approval prompt easier to read: instead of showing 
 
 If the AI tries to sneak an unapproved command past you, `pi-unbash` will catch it and block execution until you explicitly confirm it via the terminal UI.
 
+## Development
+
+### Development environment
+
+```bash
+direnv allow
+nix develop
+```
+
+The flake also exposes a reproducible devenv-based dev shell.
+
+Build the Nix package with:
+
+```bash
+nix build .#default
+```
+
+Inside the shell, install dependencies and run the test suite with:
+
+```bash
+pnpm install
+pnpm test
+```
+
 ## Installation
 
 You can install `pi-unbash` globally into your pi settings:
