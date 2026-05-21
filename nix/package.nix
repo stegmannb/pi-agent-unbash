@@ -76,8 +76,8 @@ stdenv.mkDerivation (finalAttrs: {
   installPhase = ''
     runHook preInstall
 
-    mkdir -p "$out/pi-unbash"
-    cp -r . "$out/pi-unbash/"
+    mkdir -p "$out/unbash"
+    cp -r . "$out/unbash/"
 
     runHook postInstall
   '';
