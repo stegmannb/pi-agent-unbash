@@ -79,11 +79,6 @@ stdenv.mkDerivation (finalAttrs: {
     mkdir -p "$out/pi-unbash"
     cp -r . "$out/pi-unbash/"
 
-    # Root entry point expected by pi at $out/pi-unbash/index.ts
-    cat > "$out/pi-unbash/index.ts" <<'EOF'
-export { default } from "./src/index.ts";
-EOF
-
     runHook postInstall
   '';
 
