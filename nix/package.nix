@@ -46,8 +46,8 @@ stdenv.mkDerivation (finalAttrs: {
 
   pnpmDeps = fetchPnpmDeps {
     inherit (finalAttrs) pname version src;
-    fetcherVersion = 2;
-    hash = "sha256-iQMssVz4e6lFF9e5Jb/MHdUxEHVFjUpReZi/80ARMmY=";
+    fetcherVersion = 3;
+    hash = "sha256-CfEMsU9qBWld94nebiJ3zQ+G1oW5EzQ23kHjbNgKzps=";
   };
 
   nativeBuildInputs = [
@@ -76,8 +76,8 @@ stdenv.mkDerivation (finalAttrs: {
   installPhase = ''
     runHook preInstall
 
-    mkdir -p "$out/unbash"
-    cp -r . "$out/unbash/"
+    mkdir -p "$out"
+    cp -r . "$out/"
 
     runHook postInstall
   '';
