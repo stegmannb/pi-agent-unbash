@@ -1,5 +1,13 @@
 onlyBuiltDependencies:
   - unbash
 
+allowBuilds:
+  '@google/genai': set this to true or false
+  koffi: set this to true or false
+  protobufjs: set this to true or false
+  tree-sitter: set this to true or false
+  tree-sitter-bash: set this to true or false
+  unbash: true
+
 settings:
-  autoInstallPeers: false
+  autoInstallPeers: true
